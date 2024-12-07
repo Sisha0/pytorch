@@ -801,12 +801,21 @@ def _reduce_grad(state: _FSDPState, handle: FlatParamHandle) -> None:
         state, unsharded_grad
     )
     if state._comm_hook is None:  # default path
-        _div_if_needed(padded_unsharded_grad, state._gradient_predivide_factor)
         pg = (
             handle._fake_process_group
             if handle._use_fake_reduce
             else state.process_group
         )
+
+        grad_norm = torch.sum(unsharded_grad ** 2) ** 0.5
+        min_norm = grad_norm.copy()
+        dist.all_reduce(min_norm, op=dist.ReduceOp.MIN, group=pg)
+        if uses_hybrid_sharded_strategy:
+            dist.all_reduce(min_norm, op=dist.ReduceOp.MIN, group=state._inter_node_pg)
+
+        padded_unsharded_grad = padded_unsharded_grad / grad_norm * min_norm
+
+        _div_if_needed(padded_unsharded_grad, state._gradient_predivide_factor)
         dist.reduce_scatter_tensor(
             new_sharded_grad,
             padded_unsharded_grad,
