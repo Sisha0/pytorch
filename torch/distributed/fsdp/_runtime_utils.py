@@ -808,7 +808,7 @@ def _reduce_grad(state: _FSDPState, handle: FlatParamHandle) -> None:
         )
 
         grad_norm = torch.sum(unsharded_grad ** 2) ** 0.5
-        min_norm = grad_norm.copy()
+        min_norm = grad_norm.clone()
         dist.all_reduce(min_norm, op=dist.ReduceOp.MIN, group=pg)
         if uses_hybrid_sharded_strategy:
             dist.all_reduce(min_norm, op=dist.ReduceOp.MIN, group=state._inter_node_pg)
