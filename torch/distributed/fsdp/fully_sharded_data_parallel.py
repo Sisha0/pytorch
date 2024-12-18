@@ -406,6 +406,10 @@ class FullyShardedDataParallel(nn.Module, _FSDPState):
             ``ignored_modules`` soon. For backward compatibility, we keep both
             ``ignored_states`` and `ignored_modules``, but FSDP only allows one
             of them to be specified as not ``None``.
+        use_per_core_clipping (bool): Whether to use per-core gradients clipping
+            https://arxiv.org/pdf/2406.02004. (Default: ``False``)
+        per_core_clipping_min_norm (Optional[float]): min_norm to use for per-core clipping.
+            Pass None for adaptive clipping (Default: ``False``)
     """
 
     def __init__(
@@ -430,6 +434,8 @@ class FullyShardedDataParallel(nn.Module, _FSDPState):
             Optional[Iterable[torch.nn.Parameter]], Optional[Iterable[torch.nn.Module]]
         ] = None,
         device_mesh: Optional[DeviceMesh] = None,
+        use_per_core_clipping: bool = False,
+        per_core_clipping_min_norm: Optional[float] = None,
     ):
         torch._C._log_api_usage_once("torch.distributed.fsdp")
         super().__init__()
@@ -516,6 +522,10 @@ class FullyShardedDataParallel(nn.Module, _FSDPState):
         # implemented using post-save and pre-load hooks
         _init_state_dict_state(self)
         _register_all_state_dict_hooks(self)
+
+        self._use_per_core_clipping = use_per_core_clipping
+        assert per_core_clipping_min_norm is None or per_core_clipping_min_norm > 0.0, 'min_norm should be either a positive number or None (for adaprive clipping)'
+        self._per_core_clipping_min_norm = per_core_clipping_min_norm
 
     @property
     def module(self) -> nn.Module:
