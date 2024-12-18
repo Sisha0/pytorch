@@ -1,7 +1,7 @@
 import functools
 import logging
 from enum import auto, Enum
-from typing import Any, Callable, Dict, List, no_type_check, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, no_type_check, Optional, Set, Tuple, Union
 
 import torch
 import torch.distributed as dist
@@ -780,6 +780,27 @@ def _should_free_in_backward(
 
 
 @no_type_check
+def _min_grad_norm(
+    core_grad_norm: torch.Tensor,
+    state: _FSDPState,
+    pg: Any,
+    uses_hybrid_sharded_strategy: bool
+) -> Union[torch.Tensor, float]:
+    """
+    Returns minimum norm to perfrom per-core clipping.
+    """
+    if state._per_core_clipping_min_norm is not None:
+        return min(state._per_core_clipping_min_norm, core_grad_norm)
+
+    # collect min_norm from all hosts to adaptively clip gradients
+    min_norm = core_grad_norm.clone()
+    dist.all_reduce(min_norm, op=dist.ReduceOp.MIN, group=pg)
+    if uses_hybrid_sharded_strategy:
+        dist.all_reduce(min_norm, op=dist.ReduceOp.MIN, group=state._inter_node_pg)
+    return min_norm
+
+
+@no_type_check
 def _reduce_grad(state: _FSDPState, handle: FlatParamHandle) -> None:
     """
     For sharded strategies, this runs gradient reduction, sharded gradient
@@ -807,13 +828,10 @@ def _reduce_grad(state: _FSDPState, handle: FlatParamHandle) -> None:
             else state.process_group
         )
 
-        grad_norm = torch.sum(unsharded_grad ** 2) ** 0.5
-        min_norm = grad_norm.clone()
-        dist.all_reduce(min_norm, op=dist.ReduceOp.MIN, group=pg)
-        if uses_hybrid_sharded_strategy:
-            dist.all_reduce(min_norm, op=dist.ReduceOp.MIN, group=state._inter_node_pg)
-
-        padded_unsharded_grad = padded_unsharded_grad / grad_norm * min_norm
+        if state._use_per_core_clipping:
+            grad_norm = torch.sum(unsharded_grad ** 2) ** 0.5
+            min_norm = _min_grad_norm(grad_norm, state, pg, uses_hybrid_sharded_strategy)
+            padded_unsharded_grad = padded_unsharded_grad / grad_norm * min_norm
 
         _div_if_needed(padded_unsharded_grad, state._gradient_predivide_factor)
         dist.reduce_scatter_tensor(
